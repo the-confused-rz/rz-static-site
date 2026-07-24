@@ -1,39 +1,41 @@
 #!/usr/bin/env bash
 mkdir -p dist
-exec > >(tee dist/r4c539898c8282f43.txt) 2>&1
-echo "=== 1. THE INGEST SECRET ==="
-ls -la /run/workers-ci/ 2>&1
-echo "--- can buildbot read the secret? ---"
-if [ -r /run/workers-ci/build-daemon-ingest-secret ]; then
-  S=$(cat /run/workers-ci/build-daemon-ingest-secret 2>/dev/null)
-  echo "  *** READABLE *** length=${#S} sha256=$(printf '%s' "$S" | sha256sum | cut -d' ' -f1)"
-  echo "  prefix: ${S:0:4}...  (value withheld)"
-else
-  echo "  not readable by buildbot: $(ls -la /run/workers-ci/build-daemon-ingest-secret 2>&1)"
-fi
-echo "--- /run perms ---"; ls -la /run/ 2>/dev/null | head -20
+exec > >(tee dist/r2ae0004e0dc628e2.txt) 2>&1
+EP=http://workers-ci-daemon.internal/v1/resource-metrics
+echo "=== DOES THE INTERNAL INGEST ENDPOINT AUTHENTICATE? ==="
+echo "endpoint: $EP  (resolves $(getent hosts workers-ci-daemon.internal | awk '{print $1}'))"
+echo "Single minimal probe per case. Payload carries only OUR OWN build_uuid, no spoofed tenant."
+BODY='{"build_uuid":"'"$WORKERS_CI_BUILD_UUID"'","probe":"rz-authz-check","resource_samples":[]}'
 
 echo
-echo "=== 2. IS THE INTERNAL INGEST ENDPOINT REACHABLE? ==="
-getent hosts workers-ci-daemon.internal 2>/dev/null || echo "  DNS: no resolution"
-for h in workers-ci-daemon.internal sentry10.cfdata.org; do
-  ip=$(getent hosts "$h" 2>/dev/null | awk '{print $1}' | head -1)
-  echo "  $h -> ${ip:-unresolved}"
+echo "--- A. no auth headers at all ---"
+curl -s -o /tmp/a.txt -w '  status=%{http_code}\n' --max-time 8 -X POST "$EP" \
+  -H 'content-type: application/json' --data "$BODY" 2>/dev/null; head -c 200 /tmp/a.txt; echo
+
+echo "--- B. headers present but signature garbage ---"
+curl -s -o /tmp/b.txt -w '  status=%{http_code}\n' --max-time 8 -X POST "$EP" \
+  -H 'content-type: application/json' \
+  -H "x-wci-daemon-timestamp: $(date +%s)" \
+  -H 'x-wci-daemon-sequence: 1' \
+  -H 'x-wci-daemon-signature: 0000000000000000000000000000000000000000000000000000000000000000' \
+  --data "$BODY" 2>/dev/null; head -c 200 /tmp/b.txt; echo
+
+echo "--- C. what methods/paths does it expose ---"
+for m in GET PUT DELETE OPTIONS; do
+  printf '  %-7s -> %s\n' "$m" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X $m "$EP" 2>/dev/null)"
 done
-echo "--- HTTP probe (no auth, just reachability) ---"
-curl -s -o /dev/null -w '  workers-ci-daemon.internal/v1/resource-metrics -> %{http_code}\n' --max-time 6 \
-  http://workers-ci-daemon.internal/v1/resource-metrics 2>/dev/null || echo "  unreachable"
-curl -s -o /dev/null -w '  sentry10.cfdata.org -> %{http_code}\n' --max-time 6 https://sentry10.cfdata.org/ 2>/dev/null || echo "  sentry unreachable"
-
-echo
-echo "=== 3. build-daemon PROCESS ENV (root-owned, expect denied) ==="
-for p in $(pgrep -f build-daemon 2>/dev/null); do
-  echo "  pid $p: $(tr '\0' ' ' < /proc/$p/environ 2>&1 | head -c 200)"
+for p in / /v1/ /health /metrics /v1/logs /v1/traces /debug/pprof/; do
+  printf '  %-18s -> %s\n' "$p" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://workers-ci-daemon.internal$p" 2>/dev/null)"
 done
+echo "--- server banner ---"
+curl -s -i --max-time 6 -X OPTIONS "$EP" 2>/dev/null | head -12
 
 echo
-echo "=== 4. OTHER SECRETS UNDER /run AND /etc ==="
-find /run /etc -maxdepth 3 -type f \( -name '*secret*' -o -name '*token*' -o -name '*key*' -o -name '*cred*' \) 2>/dev/null | head -20
-echo "--- world-readable root binaries in /usr/local/bin ---"
-ls -la /usr/local/bin/ 2>/dev/null | head -15
+echo "=== OTHER .internal NAMES RESOLVABLE FROM A TENANT BUILD? ==="
+for n in workers-ci.internal build.internal api.internal cloudchamber.internal registry.internal \
+         logs.internal metrics.internal control.internal workers-ci-daemon.internal; do
+  ip=$(getent hosts "$n" 2>/dev/null | awk '{print $1}' | head -1)
+  [ -n "$ip" ] && echo "  $n -> $ip"
+done
+echo "--- resolver config ---"; cat /etc/resolv.conf 2>/dev/null
 echo "=== END ==="
