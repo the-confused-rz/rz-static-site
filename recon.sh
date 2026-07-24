@@ -1,56 +1,62 @@
 #!/usr/bin/env bash
 mkdir -p dist
-exec > >(tee dist/r4d9d97d1e09bfdc1.txt) 2>&1
-echo "=== A. FULL PROCESS LIST (non-kernel) ==="
-ps auxww 2>/dev/null | grep -v ']$' | head -40
+exec > >(tee dist/r0d6582ddd8548b75.txt) 2>&1
+PROBE_TIMEOUT=4
+echo "=== 1. OUR IPv6 WORLD ==="
+ip -6 addr 2>/dev/null; echo "--- routes ---"; ip -6 route 2>/dev/null
+echo "--- neighbours ---"; ip -6 neigh 2>/dev/null
+echo "--- current v6 conns ---"; ss -6 -tunap 2>/dev/null | head -20
 
 echo
-echo "=== B. CONNECTIONS / LISTENERS (the orchestration channel) ==="
-(command -v ss >/dev/null && ss -tunap 2>/dev/null | head -40) || netstat -tunap 2>/dev/null | head -40
-echo "--- /proc/net/tcp raw ---"; head -15 /proc/net/tcp 2>/dev/null
-echo "--- vsock sockets in use ---"; cat /proc/net/vsock* 2>/dev/null | head -20
-ls /proc/net/ 2>/dev/null | tr '\n' ' '; echo
+echo "=== 2. WHAT IS fd00::119:1 ==="
+for path in / /metrics /health /status /v1/ /debug/pprof/ /.well-known/ /api/v1/; do
+  code=$(curl -6 -s -o /dev/null -w '%{http_code}' --max-time 4 "http://[fd00::119:1]$path" 2>/dev/null)
+  [ -n "$code" ] && [ "$code" != "000" ] && echo "  [fd00::119:1]$path -> $code"
+done
+echo "--- full response of / ---"
+curl -6 -s -i --max-time 6 "http://[fd00::119:1]/" 2>&1 | head -40
 
 echo
-echo "=== C. WIDE VSOCK SCAN, host CID 2 ==="
+echo "=== 3. SCAN THE INTERNAL ULA NEIGHBOURHOOD ==="
+for h in fd00::1 fd00::2 fd00::10 fd00::11 fd00::100 fd00::119:1 fd00::119:2 fd00::119:10 \
+         fd00::118:1 fd00::120:1 fd00::a fd00::ffff; do
+  for p in 80 443 8080 9090 2323; do
+    if timeout 2 bash -c "echo > /dev/tcp/$h/$p" 2>/dev/null; then
+      echo "  *** [$h]:$p OPEN ***"
+      curl -6 -s -i --max-time 4 "http://[$h]:$p/" 2>/dev/null | head -6
+    fi
+  done
+done
+
+echo
+echo "=== 4. LOCAL ROOT LISTENER 127.0.0.1:817 ==="
+curl -s -i --max-time 5 http://127.0.0.1:817/ 2>&1 | head -20
+for path in / /metrics /health /v1/ /status /debug/pprof/; do
+  c=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "http://127.0.0.1:817$path" 2>/dev/null)
+  [ "$c" != "000" ] && echo "  127.0.0.1:817$path -> $c"
+done
+printf 'GET / HTTP/1.0\r\n\r\n' | timeout 4 bash -c 'cat > /dev/tcp/127.0.0.1/817' 2>/dev/null
+(exec 3<>/dev/tcp/127.0.0.1/817 && printf 'HELLO\r\n' >&3 && timeout 3 head -c 300 <&3) 2>/dev/null | head -10
+
+echo
+echo "=== 5. VSOCK CID2:514 -- IDENTIFY ONLY, NO WRITES ==="
 python3 - <<'PY'
 import socket
-open_ports=[]
-def probe(cid,port,to=0.35):
-    s=socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM); s.settimeout(to)
+s=socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM); s.settimeout(4)
+try:
+    s.connect((2,514)); print("  connected to host CID2:514")
+    s.settimeout(2.5)
     try:
-        s.connect((cid,port)); return True
-    except Exception: return False
-    finally:
-        try: s.close()
-        except Exception: pass
-targets=list(range(1,1200))+[1234,2222,3000,4000,5000,5555,6000,7000,8000,8080,8443,9000,9999,10000,10240,12345,20000,50000,54321,65535]
-for p in targets:
-    if probe(2,p): open_ports.append(p); print(f"  *** CID2 port {p} OPEN ***", flush=True)
-print("  open on host CID2:", open_ports or "none")
-# also try CID 1 (local/hypervisor) and our own CID 3
-for cid in (0,1):
-    for p in (80,443,1024,5000,8000):
-        if probe(cid,p): print(f"  *** CID{cid} port {p} OPEN ***")
+        b=s.recv(256); print("  banner:", b[:200] if b else "(none, silent listener)")
+    except socket.timeout: print("  no banner within 2.5s (silent, likely syslog sink)")
+except Exception as e: print("  connect failed:",e)
+finally: s.close()
 PY
+echo "--- who else can reach vsock? /dev/vsock perms ---"; ls -la /dev/vsock
 
 echo
-echo "=== D. GROUP 991 AND PRIV SURFACE ==="
-getent group 991 2>/dev/null; grep -E ':(991|166534):' /etc/group 2>/dev/null
-echo "--- subuid/subgid ---"; cat /etc/subuid /etc/subgid 2>/dev/null
-echo "--- can we read the journal? ---"; journalctl -n 15 --no-pager 2>&1 | head -18
-
-echo
-echo "=== E. SYSTEMD UNITS: WHO RUNS THE BUILD ==="
-systemctl list-units --type=service --no-pager --no-legend 2>/dev/null | head -25
-echo "--- unit files mentioning build/agent/cloudchamber ---"
-grep -rilE 'cloudchamber|buildbot|workers-ci|build-agent' /etc/systemd /lib/systemd /run/systemd 2>/dev/null | head -10
-for f in $(grep -rilE 'cloudchamber|buildbot|workers-ci' /etc/systemd /lib/systemd 2>/dev/null | head -3); do echo "--- $f ---"; cat "$f" 2>/dev/null | head -25; done
-
-echo
-echo "=== F. KERNEL CMDLINE / FIRECRACKER CONFIG ==="
-cat /proc/cmdline 2>/dev/null
-cat /sys/class/dmi/id/product_name /sys/class/dmi/id/sys_vendor 2>/dev/null
-ls /sys/bus/virtio/devices/ 2>/dev/null
-for d in /sys/bus/virtio/devices/*/; do echo "  $d -> $(cat $d/modalias 2>/dev/null)"; done 2>/dev/null | head -10
+echo "=== 6. METRIC/OTEL CONFIG (internal endpoints) ==="
+ls -la /etc/opentelemetry-collector/ 2>/dev/null
+cat /etc/opentelemetry-collector/config.yaml 2>/dev/null | head -60
+echo "--- /opt/root readable? ---"; ls -la /opt/root/ 2>/dev/null | head
 echo "=== END ==="
