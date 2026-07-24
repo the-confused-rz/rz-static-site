@@ -126,3 +126,21 @@ echo "=================================================================="
 echo "RECON COMPLETE"
 echo "=================================================================="
 mkdir -p dist && echo "ok" > dist/index.html
+
+echo
+echo "=================================================================="
+echo "6. IS THE ACCOUNT-SCOPED BUILD TOKEN VISIBLE FROM HERE?"
+echo "=================================================================="
+# The dashboard mints an account-wide token named "<project> build token".
+# The only question that matters is whether this container can see it.
+found=0
+for v in $(env | cut -d= -f1); do
+  val=$(eval "printf '%s' \"\${$v}\"")
+  case "$val" in
+    cfut_*|cfat_*) echo "  CF TOKEN IN ENV: $v = <${#val} chars, prefix $(printf '%s' "$val" | cut -c1-5)...>"; found=1 ;;
+  esac
+done
+grep -rlE 'cfut_|cfat_' /opt/buildhome ~/.wrangler /tmp . 2>/dev/null | grep -v recon.sh | head -5 | while read -r f; do
+  echo "  CF TOKEN IN FILE: $f"; found=1
+done
+[ "$found" -eq 0 ] && echo "  no cfut_/cfat_ token visible in env or common paths"
