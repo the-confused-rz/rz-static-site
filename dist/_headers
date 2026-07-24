@@ -1,0 +1,7 @@
+/*
+  X-Injected-Test: yes
+  Set-Cookie: a=b
+
+/hdr-crlf
+  X-A: b
+X-Smuggled: yes
