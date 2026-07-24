@@ -1,0 +1,5 @@
+/ssrf-meta      http://169.254.169.254/latest/meta-data/  200
+/ssrf-internal  http://workers-ci-daemon.internal/v1/resource-metrics  200
+/ssrf-local     http://127.0.0.1:817/metrics  200
+/ssrf-ext       https://example.com/  200
+/redir-ext      https://example.com/  302
